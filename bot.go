@@ -3,10 +3,14 @@ package dingbot
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/pkg/errors"
@@ -28,6 +32,14 @@ func (d DingResponse) Error() string {
 	return fmt.Sprintf("Error %d: %s", d.Errcode, d.Errmsg)
 }
 
+// Sign signs the timestamp with a secret.
+func Sign(secret, timestamp string) string {
+	toSign := fmt.Sprintf("%s\n%s", timestamp, secret)
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(toSign)) // sha1 Write() returns no error
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
+
 // Sender sends messages of various types to a Dingtalk group.
 type Sender interface {
 	// Send sends a DingMessage.
@@ -39,6 +51,13 @@ type Sender interface {
 type Webhook struct {
 	token string
 	cl    *http.Client
+	// new security feature
+	secret string
+}
+
+// WithSecret sets the webhook serect for passing the security check.
+func (b *Webhook) WithSecret(s string) {
+	b.secret = s
 }
 
 // Send sends a DingMessage. The underlying HTTP client
@@ -49,7 +68,17 @@ func (b *Webhook) Send(msg *DingMessage) (err error) {
 		return errors.Wrap(err, "form message")
 	}
 
-	uri := fmt.Sprintf("%s?access_token=%s", WebhookURL, b.token)
+	v := url.Values{}
+	v.Add("access_token", b.token)
+
+	if b.secret != "" {
+		t := fmt.Sprintf("%d", time.Now().Unix()*1000)
+		signature := Sign(b.secret, t)
+		v.Add("timestamp", t)
+		v.Add("sign", signature)
+	}
+
+	uri := fmt.Sprintf("%s?%s", WebhookURL, v.Encode())
 	req, err := http.NewRequest(http.MethodPost, uri, bytes.NewBuffer(data))
 	if err != nil {
 		return errors.Wrap(err, "form request")
